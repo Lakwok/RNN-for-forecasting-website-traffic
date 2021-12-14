@@ -1,0 +1,288 @@
+---
+title: "project final DNN and RNN neutral model"
+author: "group 6"
+date: "week 11"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(keras)
+library(naniar)
+library(sjmisc)
+```
+
+```{r}
+wiki <- read.csv("wikipedia.csv", header = F)
+id <- c(1:865)
+names(wiki)[2:866] <- id
+
+wiki_en <- wiki[grep("_en.wiki", wiki$V1), ] 
+wiki_en <- wiki_en %>% rotate_df(cn = T, rn = "V1") 
+wiki_en <- data.matrix(wiki_en[,-1])
+wiki_en_tr <- wiki_en[1:692,]
+wiki_en_ts <- wiki_en[693:865,]
+
+mean_en <- apply(wiki_en_tr, 2, mean)
+std_en <- apply(wiki_en_tr, 2, sd)
+wiki_en <- scale(wiki_en, center = mean_en, scale = std_en)
+
+# wiki.en <- df[grep("_en.wiki", df$name), ] # English Wikipedia  
+# wiki.fr <- df[grep("_fr.wiki", df$name), ] # France Wikipedia
+# wiki.de <- df[grep("_de.wiki", df$name), ] # German Wikipedia
+# wiki.es <- df[grep("_es.wiki", df$name), ] # Spanish Wikipedia
+# wiki.ja <- df[grep("_ja.wiki", df$name), ] # Japan Wikipedia
+# wiki.ru <- df[grep("_ru.wiki", df$name), ] # Russia Wikipedia
+# wiki.zh <- df[grep("_zh.wiki", df$name), ] # Chinese Wikipedia
+# wiki.resid <- anti_join(
+#             x = df, 
+#             y = bind_rows(wiki.de,wiki.en,wiki.es,wiki.fr,wiki.ja,wiki.ru,wiki.zh),
+#             by = "ID") # Residual website 
+# # There are only 33 websites in wiki, all of them come from wikimedia or wikipedia commons  
+```
+
+
+```{r}
+# just for en
+generator <- function(data, lookback, delay, min_index, max_index,
+                      shuffle = FALSE, batch_size = 64, step = 1) { 
+  if (is.null(max_index))
+    max_index <- nrow(data) - delay - 1
+  i <- min_index + lookback
+  function() {
+    if (shuffle) {
+      rows <- sample(c((min_index+lookback):max_index), size = batch_size)
+    } else {
+      if (i + batch_size >= max_index)
+        i <<- min_index + lookback
+      rows <- c(i:min(i+batch_size, max_index))
+      i <<- i + length(rows)
+    }
+    samples <- array(0, dim = c(length(rows),
+                                lookback / step,
+                                dim(data)[[-1]]))
+    targets <- array(0, dim = c(length(rows)))
+
+    for (j in 1:length(rows)) {
+      indices <- seq(rows[[j]] - lookback, rows[[j]],
+                     length.out = dim(samples)[[2]])
+      samples[j,,] <- data[indices,]
+      targets[[j]] <- data[rows[[j]] + delay,1]
+    }
+
+
+    list(samples, targets)
+
+    
+    # samples <- array(0, dim = c(length(rows),
+    #                             lookback / step,
+    #                             dim(data)[[-1]]))
+    # 
+    # targets <- array(0, dim = c(length(rows),
+    #                             dim(data)[[-1]]))
+    # 
+    # for (j in 1:length(rows)) {
+    #   #j <- 1
+    #   indices <- seq(rows[[j]] - lookback, rows[[j]],
+    #                  length.out = dim(samples)[[2]])
+    # 
+    #   samples[j,,] <- data[indices,]
+    #   targets[j,] <- data[rows[[j]] + delay,]
+    # }
+    # 
+    # list(samples, targets)
+  }
+}
+
+lookback <- 28 # the past four weeks
+step <- 1 # Take a point every other day
+delay <- 1 # predict one day
+batch_size <- 64 # the sample size of one batch 
+timesteps <- lookback/step
+
+train_gen <- generator( # generator train data set 
+  wiki_en,
+  lookback = lookback,
+  delay = delay,
+  min_index = 1,
+  max_index = 554, # from 1-554 data points
+  shuffle = TRUE, # allow disrupt the order of each batch
+  step = step,
+  batch_size = batch_size
+)
+
+val_gen = generator( # generate validation data set
+  wiki_en,
+  lookback = lookback,
+  delay = delay,
+  min_index = 555, # from 555 to 692 data points
+  max_index = 692,
+  step = step,
+  batch_size = batch_size
+)
+
+
+test_gen <- generator( # generate test data set
+  wiki_en,
+  lookback = lookback,
+  delay = delay,
+  min_index = 693,
+  max_index = NULL, #from 693 to the end
+  step = step,
+  batch_size = batch_size
+)
+val_steps <- (692 - 555 - lookback) / batch_size
+test_steps <- (nrow(wiki_en) - 693 - lookback) / batch_size
+```
+
+
+```{r}
+#bad basic DNN model
+model <- keras_model_sequential() %>%
+  layer_flatten(input_shape = c(timesteps, dim(wiki_en)[-1])) %>% 
+  layer_dense(units = 32, activation = "tanh",kernel_regularizer = regularizer_l2(0.001)) %>%
+ # layer_dropout(rate=0.5)
+  layer_dense(units = 1)
+
+model %>% compile(
+  optimizer = optimizer_rmsprop(),
+  loss = "mse",
+  metrics=c("mae")
+)
+
+history_bad <- model %>% fit_generator(
+  train_gen, #to do
+  steps_per_epoch = 8, #改动
+  epochs = 10,
+  validation_data = val_gen,
+  validation_steps = val_steps
+)
+
+plot(history_bad)
+```
+
+```{r}
+# check test loss and mae
+history_bad_test <- model %>% fit_generator(
+  test_gen,
+  steps_per_epoch = 8, 
+  epochs = 10
+)
+plot(history_bad_test) +
+  labs(title = "The Loss and MAE for test data in DNN")
+
+```
+
+
+```{r}
+# use layer_gru (RNN model)
+model <- keras_model_sequential() %>%
+  layer_gru(units =32, input_shape = list(NULL, dim(wiki_en)[[-1]])) %>%
+  layer_dense(units = 1)
+
+model %>% compile(
+  optimizer = optimizer_rmsprop(),
+   loss = "mse",
+  metrics=c("mae")
+  
+)
+
+history_gru <- model %>% fit_generator(
+  train_gen,
+  steps_per_epoch = 10, 
+  epochs = 8,
+  validation_data = val_gen,
+  validation_steps = val_steps
+)
+
+plot(history_gru)
+```
+
+
+```{r}
+#add dropout and recurrent_dropout
+model <- keras_model_sequential() %>%
+  layer_gru(units = 32, dropout = 0.5, recurrent_dropout = 0.5,
+            input_shape = list(NULL, dim(wiki_en)[[-1]])) %>%
+  layer_dense(units = 1)
+
+model %>% compile(
+  optimizer = optimizer_rmsprop(),
+  loss = "mse",
+  metrics=c("mae")
+  
+)
+
+history_grudrop <- model %>% fit_generator(
+  train_gen,
+  steps_per_epoch = 10, #改动
+  epochs = 20,
+  validation_data = val_gen,
+  validation_steps = val_steps
+)
+plot(history_grudrop)
+# best gru model
+```
+
+
+```{r}
+# check test loss and mae
+history_twolayer_test <- model %>% fit_generator(
+  test_gen,
+  steps_per_epoch = 8, 
+  epochs = 20
+)
+plot(history_twolayer_test) +
+  labs(title = "The Loss and MAE for test data in GRU")
+
+```
+
+
+```{r}
+predict_value <- model %>% predict_generator(
+  test_gen,
+  steps=1
+)
+```
+
+
+```{r}
+# try to add gru layer, but it is not good
+model <- keras_model_sequential() %>%
+  layer_gru(units = 32,
+            dropout = 0.5,
+            recurrent_dropout = 0.5,
+            return_sequences = TRUE,
+            input_shape = list(NULL, dim(wiki_en)[[-1]])) %>%
+  layer_gru(units = 16, activation = "relu",
+            dropout = 0.5,
+            recurrent_dropout = 0.5) %>%
+  layer_dense(units = 1)
+
+model %>% compile(
+  optimizer = optimizer_rmsprop(),
+  loss = "mse",
+  metrics=c("mae")
+)
+
+history_twolayer <- model %>% fit_generator(
+  train_gen,
+  steps_per_epoch = 8, 
+  epochs = 20,
+  validation_data = val_gen,
+  validation_steps = val_steps
+)
+
+plot(history_twolayer)
+```
+
+
+
+
+
