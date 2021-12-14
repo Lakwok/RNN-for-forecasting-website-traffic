@@ -6,7 +6,7 @@ output: html_document
 editor_options: 
   chunk_output_type: console
 ---
-
+#Note: This is a group project by Liguo Bao, Wanxin Liu, Xingli Wang and Lirui Guo
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
